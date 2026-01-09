@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Plus, Settings, Database, Cloud, AlertTriangle, 
   MapPin, Camera, Save, ArrowLeft, RefreshCw,
-  FileSpreadsheet, CheckCircle, Loader2, Trash2, Edit2, Map as MapIcon, X, Maximize2, Minimize2
+  FileSpreadsheet, CheckCircle, Loader2, Trash2, Edit2, Map as MapIcon, X, Maximize2, Minimize2, Crosshair
 } from 'lucide-react';
-import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 
 import { Campaign, FieldDefinition, FieldType, Entry, GoogleAuthConfig } from './types';
@@ -42,6 +42,54 @@ const Button: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { variant
 const Input: React.FC<React.InputHTMLAttributes<HTMLInputElement>> = (props) => (
   <input className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-accent focus:border-transparent outline-none" {...props} />
 );
+
+// --- specialized Map Components ---
+
+const RecenterMap = ({ lat, lng }: { lat: number, lng: number }) => {
+  const map = useMap();
+  useEffect(() => {
+    if (lat && lng) {
+      map.setView([lat, lng], map.getZoom());
+    }
+  }, [lat, lng]);
+  return null;
+};
+
+// Draggable Marker for Point Field
+const DraggableMarker = ({ position, onDragEnd }: { position: [number, number], onDragEnd: (lat: number, lng: number) => void }) => {
+  const markerRef = useRef<L.Marker>(null);
+  const eventHandlers = useMemo(
+    () => ({
+      dragend() {
+        const marker = markerRef.current;
+        if (marker != null) {
+          const { lat, lng } = marker.getLatLng();
+          onDragEnd(lat, lng);
+        }
+      },
+    }),
+    [onDragEnd],
+  );
+
+  return (
+    <Marker
+      draggable={true}
+      eventHandlers={eventHandlers}
+      position={position}
+      ref={markerRef}
+    />
+  );
+};
+
+// Map click handler for Polygon
+const MapClickHandler = ({ onClick }: { onClick: (lat: number, lng: number) => void }) => {
+  useMapEvents({
+    click(e) {
+      onClick(e.latlng.lat, e.latlng.lng);
+    },
+  });
+  return null;
+};
 
 // --- Sub-Screens ---
 
@@ -254,7 +302,7 @@ const CampaignView = ({
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
-  const [locationLoading, setLocationLoading] = useState(false);
+  const [loadingLoc, setLoadingLoc] = useState<string | null>(null); // tracks field ID being located
   const [localCampaign, setLocalCampaign] = useState(campaign);
 
   useEffect(() => {
@@ -324,10 +372,39 @@ const CampaignView = ({
       }
     }
 
+    // Auto-determine main "entry location" for the Dashboard map
+    // We look for the first 'location' field, or the first point of the first 'polygon' field
+    let mainLoc: any = null;
+    
+    // Check specific location fields
+    for (const f of campaign.fields) {
+      if (f.type === 'location' && formData[f.id]) {
+        mainLoc = formData[f.id];
+        break;
+      }
+    }
+    
+    // Fallback to polygon start point
+    if (!mainLoc) {
+      for (const f of campaign.fields) {
+        if (f.type === 'polygon' && formData[f.id] && formData[f.id].length > 0) {
+          mainLoc = formData[f.id][0];
+          break;
+        }
+      }
+    }
+
+    // Prepare global location data if found
+    const locUpdates = mainLoc ? {
+      '__loc_lat': mainLoc.latitude,
+      '__loc_lng': mainLoc.longitude,
+      '__loc_acc': mainLoc.accuracy || 0
+    } : {};
+
     const newEntry: Entry = {
       id: editingEntryId || crypto.randomUUID(),
       campaignId: campaign.id,
-      data: formData,
+      data: { ...formData, ...locUpdates },
       synced: false,
       createdAt: editingEntryId ? entries.find(e => e.id === editingEntryId)?.createdAt || Date.now() : Date.now(),
       updatedAt: Date.now()
@@ -338,39 +415,6 @@ const CampaignView = ({
     setFormData({});
     setEditingEntryId(null);
     setView('list');
-  };
-
-  const captureLocation = () => {
-    setLocationLoading(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
-        const acc = pos.coords.accuracy;
-
-        // Auto-fill Global
-        const updates: any = {
-          '__loc_lat': lat,
-          '__loc_lng': lng,
-          '__loc_acc': acc,
-        };
-
-        // Auto-fill explicit Location Fields if empty
-        campaign.fields.forEach(f => {
-          if (f.type === 'location' && !formData[f.id]) {
-            updates[f.id] = { latitude: lat, longitude: lng };
-          }
-        });
-
-        setFormData(prev => ({ ...prev, ...updates }));
-        setLocationLoading(false);
-      },
-      (err) => {
-        alert('Could not get location: ' + err.message);
-        setLocationLoading(false);
-      },
-      { enableHighAccuracy: true }
-    );
   };
 
   const handleFileChange = (fieldId: string, e: React.ChangeEvent<HTMLInputElement>) => {
@@ -384,13 +428,46 @@ const CampaignView = ({
     }
   };
 
+  const capturePoint = (fieldId: string) => {
+    setLoadingLoc(fieldId);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setFormData(prev => ({
+          ...prev,
+          [fieldId]: {
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+            timestamp: pos.timestamp
+          }
+        }));
+        setLoadingLoc(null);
+      },
+      (err) => {
+        alert(err.message);
+        setLoadingLoc(null);
+      },
+      { enableHighAccuracy: true }
+    );
+  };
+
   // Polygon Helper
-  const addToPolygon = (fieldId: string) => {
+  const addPolygonPoint = (fieldId: string) => {
+    setLoadingLoc(fieldId);
     navigator.geolocation.getCurrentPosition(pos => {
       const current = formData[fieldId] || [];
-      const newPoint = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
+      const newPoint = { 
+        latitude: pos.coords.latitude, 
+        longitude: pos.coords.longitude,
+        accuracy: pos.coords.accuracy,
+        timestamp: pos.timestamp
+      };
       setFormData(prev => ({ ...prev, [fieldId]: [...current, newPoint] }));
-    }, err => alert(err.message), { enableHighAccuracy: true });
+      setLoadingLoc(null);
+    }, err => {
+      alert(err.message);
+      setLoadingLoc(null);
+    }, { enableHighAccuracy: true });
   };
 
   const clearPolygon = (fieldId: string) => {
@@ -407,37 +484,14 @@ const CampaignView = ({
           <h1 className="text-xl font-bold">{editingEntryId ? 'Edit Entry' : 'New Entry'}</h1>
         </div>
         
-        <div className="space-y-6 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-          {/* Global Location Capture for every entry */}
-          <div className="bg-blue-50 p-4 rounded-lg flex flex-col gap-3">
-             <div className="flex items-center justify-between">
-                <div className="text-sm text-blue-800">
-                  <div className="font-bold mb-1">GPS Coordinates (Entry Root)</div>
-                  {formData['__loc_lat'] ? (
-                    <span>{formData['__loc_lat'].toFixed(6)}, {formData['__loc_lng'].toFixed(6)} (±{Math.round(formData['__loc_acc'])}m)</span>
-                  ) : (
-                    <span>Not captured</span>
-                  )}
-                </div>
-                <Button variant="secondary" onClick={captureLocation} disabled={locationLoading} className="text-xs">
-                  {locationLoading ? <Loader2 className="animate-spin" size={16}/> : <MapPin size={16}/>}
-                  {formData['__loc_lat'] ? 'Update & Autofill' : 'Capture & Autofill'}
-                </Button>
-            </div>
-            {formData['__loc_lat'] && (
-               <div className="text-[10px] text-blue-600">
-                 * Clicking capture also updates empty 'Point' fields below.
-               </div>
-            )}
-          </div>
-
-          <div className="text-xs text-slate-400 font-mono text-right">
+        <div className="space-y-8 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+          <div className="text-xs text-slate-400 font-mono text-right border-b pb-2">
              ID: {editingEntryId || 'New'}
           </div>
 
           {campaign.fields.map(field => (
-            <div key={field.id} className="border-b border-slate-100 pb-4 last:border-0">
-              <label className="block text-sm font-bold text-slate-700 mb-2">
+            <div key={field.id} className="border-b border-slate-100 pb-8 last:border-0 last:pb-0">
+              <label className="block text-base font-bold text-slate-800 mb-3">
                 {field.name} {field.required && <span className="text-red-500">*</span>}
               </label>
               
@@ -493,50 +547,155 @@ const CampaignView = ({
               )}
 
               {field.type === 'location' && (
-                <div className="space-y-2">
-                  <div className="flex gap-2">
-                    <Input 
-                      placeholder="Latitude"
-                      type="number"
-                      step="any"
-                      value={formData[field.id]?.latitude || ''} 
-                      onChange={e => setFormData({...formData, [field.id]: { ...formData[field.id], latitude: parseFloat(e.target.value) }})}
-                    />
-                    <Input 
-                      placeholder="Longitude"
-                      type="number"
-                      step="any"
-                      value={formData[field.id]?.longitude || ''} 
-                      onChange={e => setFormData({...formData, [field.id]: { ...formData[field.id], longitude: parseFloat(e.target.value) }})}
-                    />
-                  </div>
-                  <div className="flex justify-end">
-                     <Button variant="secondary" className="text-xs py-1" onClick={() => {
-                        navigator.geolocation.getCurrentPosition(pos => {
-                           setFormData({...formData, [field.id]: { latitude: pos.coords.latitude, longitude: pos.coords.longitude }});
-                        });
-                     }}>Use Current Position</Button>
-                  </div>
+                <div className="space-y-3">
+                  {!formData[field.id] ? (
+                    <Button 
+                      variant="secondary" 
+                      onClick={() => capturePoint(field.id)} 
+                      disabled={loadingLoc === field.id}
+                      className="w-full py-4 border-dashed"
+                    >
+                      {loadingLoc === field.id ? <Loader2 className="animate-spin" /> : <MapPin />}
+                      Capture GPS Location
+                    </Button>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                         <div>
+                           <label className="text-[10px] uppercase font-bold text-slate-500">Latitude</label>
+                           <Input 
+                              type="number" step="any"
+                              value={formData[field.id].latitude}
+                              onChange={(e) => setFormData(prev => ({...prev, [field.id]: {...prev[field.id], latitude: parseFloat(e.target.value)}}))}
+                           />
+                         </div>
+                         <div>
+                           <label className="text-[10px] uppercase font-bold text-slate-500">Longitude</label>
+                           <Input 
+                              type="number" step="any"
+                              value={formData[field.id].longitude}
+                              onChange={(e) => setFormData(prev => ({...prev, [field.id]: {...prev[field.id], longitude: parseFloat(e.target.value)}}))}
+                           />
+                         </div>
+                      </div>
+                      <div className="flex justify-between items-center text-xs text-slate-500">
+                         <span>Acc: {Math.round(formData[field.id].accuracy)}m</span>
+                         <Button variant="ghost" onClick={() => capturePoint(field.id)} className="text-xs h-8 text-accent">
+                            <RefreshCw size={12} className={loadingLoc === field.id ? 'animate-spin' : ''} /> Update GPS
+                         </Button>
+                      </div>
+                      
+                      {/* Mini Map for Point */}
+                      <div className="h-64 rounded-lg overflow-hidden border border-slate-300 relative z-0">
+                         <MapContainer center={[formData[field.id].latitude, formData[field.id].longitude]} zoom={16} style={{height: '100%', width: '100%'}}>
+                            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                            <RecenterMap lat={formData[field.id].latitude} lng={formData[field.id].longitude} />
+                            <DraggableMarker 
+                              position={[formData[field.id].latitude, formData[field.id].longitude]}
+                              onDragEnd={(lat, lng) => {
+                                setFormData(prev => ({
+                                  ...prev, 
+                                  [field.id]: { ...prev[field.id], latitude: lat, longitude: lng }
+                                }));
+                              }}
+                            />
+                         </MapContainer>
+                         <div className="absolute top-2 right-2 z-[400] bg-white/90 px-2 py-1 text-[10px] rounded shadow backdrop-blur">
+                            Drag pin to adjust
+                         </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
               {field.type === 'polygon' && (
-                <div className="space-y-3 bg-slate-50 p-3 rounded-lg">
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs font-mono text-slate-500">
-                       {(formData[field.id] || []).length} Points Captured
-                    </span>
-                    <div className="flex gap-2">
-                       <Button variant="ghost" className="text-red-500 text-xs py-1 h-8" onClick={() => clearPolygon(field.id)}>Clear</Button>
-                       <Button variant="secondary" className="text-xs py-1 h-8" onClick={() => addToPolygon(field.id)}>+ Add Current Pos</Button>
-                    </div>
+                <div className="space-y-3 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                  <div className="flex flex-wrap gap-2 mb-2">
+                     <Button variant="primary" className="text-xs flex-1" onClick={() => addPolygonPoint(field.id)} disabled={loadingLoc === field.id}>
+                        {loadingLoc === field.id ? <Loader2 className="animate-spin" size={14}/> : <Plus size={14} />} 
+                        GPS Point
+                     </Button>
+                     {(formData[field.id] || []).length > 0 && (
+                        <Button variant="danger" className="text-xs" onClick={() => clearPolygon(field.id)}>
+                           <Trash2 size={14} /> Clear
+                        </Button>
+                     )}
                   </div>
+
+                  {/* Polygon Map */}
+                  <div className="h-72 rounded-lg overflow-hidden border border-slate-300 relative z-0">
+                     <MapContainer 
+                        center={(formData[field.id] && formData[field.id].length > 0) ? [formData[field.id][0].latitude, formData[field.id][0].longitude] : [0,0]} 
+                        zoom={15} 
+                        style={{height: '100%', width: '100%'}}
+                     >
+                        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                        
+                        {/* Auto center if we have points */}
+                        {(formData[field.id] && formData[field.id].length > 0) && (
+                           <RecenterMap lat={formData[field.id][formData[field.id].length-1].latitude} lng={formData[field.id][formData[field.id].length-1].longitude} />
+                        )}
+
+                        <MapClickHandler onClick={(lat, lng) => {
+                           const current = formData[field.id] || [];
+                           setFormData(prev => ({ ...prev, [field.id]: [...current, { latitude: lat, longitude: lng, accuracy: 0, timestamp: Date.now() }] }));
+                        }} />
+
+                        {(formData[field.id] || []).length > 0 && (
+                           <>
+                              <Polygon positions={(formData[field.id] as any[]).map(p => [p.latitude, p.longitude])} pathOptions={{ color: 'blue' }} />
+                              {(formData[field.id] as any[]).map((p, idx) => (
+                                 <DraggableMarker 
+                                    key={`${idx}-${p.latitude}-${p.longitude}`}
+                                    position={[p.latitude, p.longitude]}
+                                    onDragEnd={(lat, lng) => {
+                                       const newPoints = [...(formData[field.id] as any[])];
+                                       newPoints[idx] = { ...newPoints[idx], latitude: lat, longitude: lng };
+                                       setFormData(prev => ({ ...prev, [field.id]: newPoints }));
+                                    }}
+                                 />
+                              ))}
+                           </>
+                        )}
+                     </MapContainer>
+                     <div className="absolute top-2 right-2 z-[400] bg-white/90 px-2 py-1 text-[10px] rounded shadow backdrop-blur flex flex-col items-end">
+                        <span>Tap map to add point</span>
+                        <span>Drag points to move</span>
+                     </div>
+                  </div>
+                  
+                  {/* Coordinates List (Editable) */}
                   {(formData[field.id] || []).length > 0 && (
-                    <div className="max-h-32 overflow-y-auto bg-white border border-slate-200 rounded text-xs p-2">
+                    <div className="max-h-32 overflow-y-auto bg-white border border-slate-200 rounded text-xs p-2 space-y-2">
                        {(formData[field.id] as any[]).map((p, i) => (
-                         <div key={i} className="flex justify-between border-b border-slate-100 last:border-0 py-1">
-                           <span>Pt {i+1}</span>
-                           <span className="font-mono">{p.latitude.toFixed(5)}, {p.longitude.toFixed(5)}</span>
+                         <div key={i} className="flex gap-2 items-center">
+                           <span className="w-8 text-slate-400">#{i+1}</span>
+                           <input 
+                              className="w-20 border rounded px-1"
+                              type="number" step="any"
+                              value={p.latitude}
+                              onChange={(e) => {
+                                 const newPoints = [...formData[field.id]];
+                                 newPoints[i].latitude = parseFloat(e.target.value);
+                                 setFormData(prev => ({ ...prev, [field.id]: newPoints }));
+                              }}
+                           />
+                           <input 
+                              className="w-20 border rounded px-1"
+                              type="number" step="any"
+                              value={p.longitude}
+                              onChange={(e) => {
+                                 const newPoints = [...formData[field.id]];
+                                 newPoints[i].longitude = parseFloat(e.target.value);
+                                 setFormData(prev => ({ ...prev, [field.id]: newPoints }));
+                              }}
+                           />
+                           <button className="text-red-400 hover:text-red-600 ml-auto" onClick={() => {
+                              const newPoints = [...formData[field.id]];
+                              newPoints.splice(i, 1);
+                              setFormData(prev => ({ ...prev, [field.id]: newPoints }));
+                           }}><Trash2 size={12} /></button>
                          </div>
                        ))}
                     </div>
@@ -547,7 +706,7 @@ const CampaignView = ({
           ))}
         </div>
 
-        <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-slate-200 flex gap-4 max-w-2xl mx-auto z-20">
+        <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-slate-200 flex gap-4 max-w-2xl mx-auto z-20 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]">
           <Button variant="secondary" className="flex-1" onClick={() => { setView('list'); setEditingEntryId(null); }}>Cancel</Button>
           <Button className="flex-1" onClick={handleSaveEntry}>
             <Save size={18} /> Save Entry
