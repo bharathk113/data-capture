@@ -122,20 +122,24 @@ export const syncEntries = async (spreadsheetId: string, campaign: Campaign, ent
     const fieldData = campaign.fields.map(field => {
       const val = entry.data[field.id];
       if (val === undefined || val === null) return '';
+      
       if (field.type === 'image') {
-        // Truncate or put a marker if too long, or better yet, if we had Drive API, we'd put a link.
-        // For simple sheets sync, we will denote it.
-        // Base64 is often too large for a cell (50k limit).
-        // Let's assume we store small text representation or a huge string if it fits.
         if (typeof val === 'string' && val.length > 40000) {
           return '(Image too large for Sheet Cell)';
         }
         return val; 
       }
+      
       if (field.type === 'location') {
         const loc = val as { latitude: number, longitude: number };
         return `${loc.latitude},${loc.longitude}`;
       }
+
+      if (field.type === 'polygon') {
+        // Store as JSON string of coordinate array
+        return JSON.stringify(val);
+      }
+
       return String(val);
     });
 

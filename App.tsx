@@ -1,12 +1,24 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Plus, Settings, Database, Cloud, AlertTriangle, 
   MapPin, Camera, Save, ArrowLeft, RefreshCw,
-  FileSpreadsheet, Download, CheckCircle, Loader2
+  FileSpreadsheet, CheckCircle, Loader2, Trash2, Edit2, Map as MapIcon, X, Maximize2, Minimize2
 } from 'lucide-react';
+import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap } from 'react-leaflet';
+import L from 'leaflet';
+
 import { Campaign, FieldDefinition, FieldType, Entry, GoogleAuthConfig } from './types';
 import { db } from './db';
 import * as GoogleService from './services/googleService';
+
+// Fix Leaflet Default Icon issue in React
+// @ts-ignore
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+});
 
 // --- Helper Components ---
 
@@ -62,9 +74,9 @@ const SettingsModal = ({ config, onSave, onClose }: { config: GoogleAuthConfig, 
   );
 };
 
-const CreateCampaign = ({ onSave, onCancel }: { onSave: (c: Campaign) => void, onCancel: () => void }) => {
-  const [name, setName] = useState('');
-  const [fields, setFields] = useState<FieldDefinition[]>([]);
+const CreateCampaign = ({ onSave, onCancel, existingCampaign }: { onSave: (c: Campaign) => void, onCancel: () => void, existingCampaign?: Campaign }) => {
+  const [name, setName] = useState(existingCampaign?.name || '');
+  const [fields, setFields] = useState<FieldDefinition[]>(existingCampaign?.fields || []);
   
   const addField = (type: FieldType) => {
     setFields([...fields, { id: crypto.randomUUID(), name: '', type, required: false }]);
@@ -83,19 +95,20 @@ const CreateCampaign = ({ onSave, onCancel }: { onSave: (c: Campaign) => void, o
     if (fields.some(f => !f.name.trim())) return alert('All fields must have a name');
     
     onSave({
-      id: crypto.randomUUID(),
+      id: existingCampaign?.id || crypto.randomUUID(),
       name,
       description: '',
       fields,
-      createdAt: Date.now()
+      createdAt: existingCampaign?.createdAt || Date.now(),
+      spreadsheetId: existingCampaign?.spreadsheetId
     });
   };
 
   return (
-    <div className="max-w-3xl mx-auto p-4 md:p-6 space-y-6">
+    <div className="max-w-3xl mx-auto p-4 md:p-6 space-y-6 pb-20">
       <div className="flex items-center gap-4 mb-6">
         <Button variant="ghost" onClick={onCancel}><ArrowLeft size={20} /></Button>
-        <h1 className="text-2xl font-bold">New Campaign</h1>
+        <h1 className="text-2xl font-bold">{existingCampaign ? 'Edit Campaign' : 'New Campaign'}</h1>
       </div>
 
       <div className="space-y-4 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
@@ -106,13 +119,14 @@ const CreateCampaign = ({ onSave, onCancel }: { onSave: (c: Campaign) => void, o
       </div>
 
       <div className="space-y-4">
-        <div className="flex justify-between items-center">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <h2 className="text-lg font-bold">Data Fields</h2>
-          <div className="flex gap-2">
-            <Button variant="secondary" onClick={() => addField('text')} className="text-xs"><Plus size={14} /> Text</Button>
-            <Button variant="secondary" onClick={() => addField('number')} className="text-xs"><Plus size={14} /> Num</Button>
-            <Button variant="secondary" onClick={() => addField('image')} className="text-xs"><Plus size={14} /> Img</Button>
-            <Button variant="secondary" onClick={() => addField('location')} className="text-xs"><Plus size={14} /> Loc</Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={() => addField('text')} className="text-xs px-2"><Plus size={14} /> Text</Button>
+            <Button variant="secondary" onClick={() => addField('number')} className="text-xs px-2"><Plus size={14} /> Num</Button>
+            <Button variant="secondary" onClick={() => addField('image')} className="text-xs px-2"><Plus size={14} /> Img</Button>
+            <Button variant="secondary" onClick={() => addField('location')} className="text-xs px-2"><Plus size={14} /> Point</Button>
+            <Button variant="secondary" onClick={() => addField('polygon')} className="text-xs px-2"><Plus size={14} /> Poly</Button>
           </div>
         </div>
 
@@ -149,8 +163,74 @@ const CreateCampaign = ({ onSave, onCancel }: { onSave: (c: Campaign) => void, o
       </div>
 
       <div className="pt-6">
-        <Button className="w-full py-3 text-lg" onClick={handleSave}>Create Campaign</Button>
+        <Button className="w-full py-3 text-lg" onClick={handleSave}>
+          {existingCampaign ? 'Update Campaign' : 'Create Campaign'}
+        </Button>
       </div>
+    </div>
+  );
+};
+
+// Map Component to show multiple points/polygons
+const CampaignMap = ({ entries, fields }: { entries: Entry[], fields: FieldDefinition[] }) => {
+  const center: [number, number] = entries.find(e => e.data['__loc_lat']) 
+    ? [entries.find(e => e.data['__loc_lat'])!.data['__loc_lat'], entries.find(e => e.data['__loc_lat'])!.data['__loc_lng']] 
+    : [0, 0];
+  
+  const hasData = entries.some(e => e.data['__loc_lat']);
+
+  // Custom component to update view bounds
+  const Recenter = ({ lat, lng }: { lat: number, lng: number }) => {
+    const map = useMap();
+    useEffect(() => {
+      if (lat !== 0 && lng !== 0) {
+        map.setView([lat, lng], 13);
+      }
+    }, [lat, lng]);
+    return null;
+  };
+
+  if (!hasData) return <div className="p-10 text-center text-slate-500 bg-slate-100">No location data to display</div>;
+
+  return (
+    <div className="h-[400px] w-full rounded-xl overflow-hidden border border-slate-300 relative z-0">
+      <MapContainer center={center} zoom={2} style={{ height: '100%', width: '100%' }}>
+        <TileLayer
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
+        <Recenter lat={center[0]} lng={center[1]} />
+        
+        {entries.map(entry => {
+           // Main Global Location
+           const globalLat = entry.data['__loc_lat'];
+           const globalLng = entry.data['__loc_lng'];
+           const title = Object.entries(entry.data).find(([k]) => !k.startsWith('__loc'))?.[1]?.toString().substring(0, 50) || 'Entry';
+           
+           return (
+             <React.Fragment key={entry.id}>
+               {globalLat && (
+                 <Marker position={[globalLat, globalLng]}>
+                   <Popup>
+                     <div className="font-bold">{title}</div>
+                     <div className="text-xs">{new Date(entry.createdAt).toLocaleString()}</div>
+                   </Popup>
+                 </Marker>
+               )}
+               
+               {/* Render Polygons if any */}
+               {fields.filter(f => f.type === 'polygon').map(f => {
+                 const polyData = entry.data[f.id];
+                 if (polyData && Array.isArray(polyData) && polyData.length > 2) {
+                    const positions = polyData.map((p: any) => [p.latitude, p.longitude] as [number, number]);
+                    return <Polygon key={f.id} positions={positions} pathOptions={{ color: 'blue' }} />;
+                 }
+                 return null;
+               })}
+             </React.Fragment>
+           );
+        })}
+      </MapContainer>
     </div>
   );
 };
@@ -158,20 +238,25 @@ const CreateCampaign = ({ onSave, onCancel }: { onSave: (c: Campaign) => void, o
 const CampaignView = ({ 
   campaign, 
   onBack, 
-  authConfig 
+  authConfig,
+  onEditCampaign,
+  onDeleteCampaign
 }: { 
   campaign: Campaign, 
   onBack: () => void,
-  authConfig: GoogleAuthConfig
+  authConfig: GoogleAuthConfig,
+  onEditCampaign: (c: Campaign) => void,
+  onDeleteCampaign: (id: string) => void
 }) => {
   const [view, setView] = useState<'list' | 'entry'>('list');
+  const [showMap, setShowMap] = useState(false);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [formData, setFormData] = useState<Record<string, any>>({});
+  const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [locationLoading, setLocationLoading] = useState(false);
   const [localCampaign, setLocalCampaign] = useState(campaign);
 
-  // Load entries on mount
   useEffect(() => {
     loadEntries();
   }, [campaign.id]);
@@ -179,6 +264,19 @@ const CampaignView = ({
   const loadEntries = async () => {
     const data = await db.getEntries(campaign.id);
     setEntries(data);
+  };
+
+  const handleDeleteEntry = async (id: string) => {
+    if (confirm('Delete this entry?')) {
+      await db.deleteEntry(id);
+      loadEntries();
+    }
+  };
+
+  const handleEditEntry = (entry: Entry) => {
+    setFormData(entry.data);
+    setEditingEntryId(entry.id);
+    setView('entry');
   };
 
   const handleSync = async () => {
@@ -226,22 +324,19 @@ const CampaignView = ({
       }
     }
 
-    // Auto capture location metadata if not explicitly in fields but available
-    // (Here we just assume explicit fields or hidden meta fields, let's add hidden meta)
-    
-    // Save
     const newEntry: Entry = {
-      id: crypto.randomUUID(),
+      id: editingEntryId || crypto.randomUUID(),
       campaignId: campaign.id,
       data: formData,
       synced: false,
-      createdAt: Date.now(),
+      createdAt: editingEntryId ? entries.find(e => e.id === editingEntryId)?.createdAt || Date.now() : Date.now(),
       updatedAt: Date.now()
     };
 
     await db.saveEntry(newEntry);
     await loadEntries();
     setFormData({});
+    setEditingEntryId(null);
     setView('list');
   };
 
@@ -249,12 +344,25 @@ const CampaignView = ({
     setLocationLoading(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setFormData(prev => ({
-          ...prev,
-          '__loc_lat': pos.coords.latitude,
-          '__loc_lng': pos.coords.longitude,
-          '__loc_acc': pos.coords.accuracy,
-        }));
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        const acc = pos.coords.accuracy;
+
+        // Auto-fill Global
+        const updates: any = {
+          '__loc_lat': lat,
+          '__loc_lng': lng,
+          '__loc_acc': acc,
+        };
+
+        // Auto-fill explicit Location Fields if empty
+        campaign.fields.forEach(f => {
+          if (f.type === 'location' && !formData[f.id]) {
+            updates[f.id] = { latitude: lat, longitude: lng };
+          }
+        });
+
+        setFormData(prev => ({ ...prev, ...updates }));
         setLocationLoading(false);
       },
       (err) => {
@@ -268,13 +376,26 @@ const CampaignView = ({
   const handleFileChange = (fieldId: string, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      // Resize image logic could go here to save space
       const reader = new FileReader();
       reader.onloadend = () => {
-        // Explicitly cast result to string to satisfy strict TypeScript checks
         setFormData(prev => ({ ...prev, [fieldId]: reader.result as string }));
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  // Polygon Helper
+  const addToPolygon = (fieldId: string) => {
+    navigator.geolocation.getCurrentPosition(pos => {
+      const current = formData[fieldId] || [];
+      const newPoint = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
+      setFormData(prev => ({ ...prev, [fieldId]: [...current, newPoint] }));
+    }, err => alert(err.message), { enableHighAccuracy: true });
+  };
+
+  const clearPolygon = (fieldId: string) => {
+    if(confirm("Clear all points for this polygon?")) {
+      setFormData(prev => ({ ...prev, [fieldId]: [] }));
     }
   };
 
@@ -282,29 +403,40 @@ const CampaignView = ({
     return (
       <div className="max-w-2xl mx-auto p-4 pb-24">
         <div className="flex items-center gap-4 mb-6">
-          <Button variant="ghost" onClick={() => setView('list')}><ArrowLeft size={20} /></Button>
-          <h1 className="text-xl font-bold">New Entry</h1>
+          <Button variant="ghost" onClick={() => { setView('list'); setEditingEntryId(null); }}><ArrowLeft size={20} /></Button>
+          <h1 className="text-xl font-bold">{editingEntryId ? 'Edit Entry' : 'New Entry'}</h1>
         </div>
         
         <div className="space-y-6 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
           {/* Global Location Capture for every entry */}
-          <div className="bg-blue-50 p-4 rounded-lg flex items-center justify-between">
-            <div className="text-sm text-blue-800">
-              <div className="font-bold mb-1">GPS Coordinates</div>
-              {formData['__loc_lat'] ? (
-                <span>{formData['__loc_lat'].toFixed(6)}, {formData['__loc_lng'].toFixed(6)} (±{Math.round(formData['__loc_acc'])}m)</span>
-              ) : (
-                <span>Not captured</span>
-              )}
+          <div className="bg-blue-50 p-4 rounded-lg flex flex-col gap-3">
+             <div className="flex items-center justify-between">
+                <div className="text-sm text-blue-800">
+                  <div className="font-bold mb-1">GPS Coordinates (Entry Root)</div>
+                  {formData['__loc_lat'] ? (
+                    <span>{formData['__loc_lat'].toFixed(6)}, {formData['__loc_lng'].toFixed(6)} (±{Math.round(formData['__loc_acc'])}m)</span>
+                  ) : (
+                    <span>Not captured</span>
+                  )}
+                </div>
+                <Button variant="secondary" onClick={captureLocation} disabled={locationLoading} className="text-xs">
+                  {locationLoading ? <Loader2 className="animate-spin" size={16}/> : <MapPin size={16}/>}
+                  {formData['__loc_lat'] ? 'Update & Autofill' : 'Capture & Autofill'}
+                </Button>
             </div>
-            <Button variant="secondary" onClick={captureLocation} disabled={locationLoading} className="text-xs">
-              {locationLoading ? <Loader2 className="animate-spin" size={16}/> : <MapPin size={16}/>}
-              {formData['__loc_lat'] ? 'Update' : 'Capture'}
-            </Button>
+            {formData['__loc_lat'] && (
+               <div className="text-[10px] text-blue-600">
+                 * Clicking capture also updates empty 'Point' fields below.
+               </div>
+            )}
+          </div>
+
+          <div className="text-xs text-slate-400 font-mono text-right">
+             ID: {editingEntryId || 'New'}
           </div>
 
           {campaign.fields.map(field => (
-            <div key={field.id}>
+            <div key={field.id} className="border-b border-slate-100 pb-4 last:border-0">
               <label className="block text-sm font-bold text-slate-700 mb-2">
                 {field.name} {field.required && <span className="text-red-500">*</span>}
               </label>
@@ -361,26 +493,62 @@ const CampaignView = ({
               )}
 
               {field.type === 'location' && (
-                <div className="text-xs text-slate-500 italic">
-                  Note: Use the main GPS capture above. This field type is for explicit coordinate entry if needed manually.
-                  <Input 
-                    placeholder="-33.86, 151.20"
-                    value={formData[field.id] ? `${formData[field.id].latitude},${formData[field.id].longitude}` : ''} 
-                    onChange={e => {
-                      const [lat, lng] = e.target.value.split(',').map(s => parseFloat(s.trim()));
-                      if (!isNaN(lat) && !isNaN(lng)) {
-                         setFormData({...formData, [field.id]: { latitude: lat, longitude: lng }});
-                      }
-                    }}
-                  />
+                <div className="space-y-2">
+                  <div className="flex gap-2">
+                    <Input 
+                      placeholder="Latitude"
+                      type="number"
+                      step="any"
+                      value={formData[field.id]?.latitude || ''} 
+                      onChange={e => setFormData({...formData, [field.id]: { ...formData[field.id], latitude: parseFloat(e.target.value) }})}
+                    />
+                    <Input 
+                      placeholder="Longitude"
+                      type="number"
+                      step="any"
+                      value={formData[field.id]?.longitude || ''} 
+                      onChange={e => setFormData({...formData, [field.id]: { ...formData[field.id], longitude: parseFloat(e.target.value) }})}
+                    />
+                  </div>
+                  <div className="flex justify-end">
+                     <Button variant="secondary" className="text-xs py-1" onClick={() => {
+                        navigator.geolocation.getCurrentPosition(pos => {
+                           setFormData({...formData, [field.id]: { latitude: pos.coords.latitude, longitude: pos.coords.longitude }});
+                        });
+                     }}>Use Current Position</Button>
+                  </div>
+                </div>
+              )}
+
+              {field.type === 'polygon' && (
+                <div className="space-y-3 bg-slate-50 p-3 rounded-lg">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-mono text-slate-500">
+                       {(formData[field.id] || []).length} Points Captured
+                    </span>
+                    <div className="flex gap-2">
+                       <Button variant="ghost" className="text-red-500 text-xs py-1 h-8" onClick={() => clearPolygon(field.id)}>Clear</Button>
+                       <Button variant="secondary" className="text-xs py-1 h-8" onClick={() => addToPolygon(field.id)}>+ Add Current Pos</Button>
+                    </div>
+                  </div>
+                  {(formData[field.id] || []).length > 0 && (
+                    <div className="max-h-32 overflow-y-auto bg-white border border-slate-200 rounded text-xs p-2">
+                       {(formData[field.id] as any[]).map((p, i) => (
+                         <div key={i} className="flex justify-between border-b border-slate-100 last:border-0 py-1">
+                           <span>Pt {i+1}</span>
+                           <span className="font-mono">{p.latitude.toFixed(5)}, {p.longitude.toFixed(5)}</span>
+                         </div>
+                       ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           ))}
         </div>
 
-        <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-slate-200 flex gap-4 max-w-2xl mx-auto">
-          <Button variant="secondary" className="flex-1" onClick={() => setView('list')}>Cancel</Button>
+        <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-slate-200 flex gap-4 max-w-2xl mx-auto z-20">
+          <Button variant="secondary" className="flex-1" onClick={() => { setView('list'); setEditingEntryId(null); }}>Cancel</Button>
           <Button className="flex-1" onClick={handleSaveEntry}>
             <Save size={18} /> Save Entry
           </Button>
@@ -393,22 +561,41 @@ const CampaignView = ({
   return (
     <div className="h-full flex flex-col">
       <div className="bg-white border-b border-slate-200 sticky top-0 z-10">
-        <div className="max-w-4xl mx-auto p-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Button variant="ghost" onClick={onBack}><ArrowLeft size={20} /></Button>
-            <div>
-              <h1 className="text-xl font-bold leading-tight">{localCampaign.name}</h1>
-              <div className="text-xs text-slate-500">{entries.length} entries • {entries.filter(e => !e.synced).length} unsynced</div>
+        <div className="max-w-4xl mx-auto p-4">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-3">
+              <Button variant="ghost" onClick={onBack}><ArrowLeft size={20} /></Button>
+              <div>
+                <h1 className="text-xl font-bold leading-tight">{localCampaign.name}</h1>
+                <div className="text-xs text-slate-500">{entries.length} entries • {entries.filter(e => !e.synced).length} unsynced</div>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="ghost" onClick={() => onEditCampaign(campaign)}><Edit2 size={18} /></Button>
+              <Button variant="ghost" className="text-red-500" onClick={() => onDeleteCampaign(campaign.id)}><Trash2 size={18} /></Button>
             </div>
           </div>
-          <div className="flex gap-2">
-            <Button variant="secondary" onClick={handleSync} disabled={syncing}>
+          
+          <div className="flex gap-2 mt-2">
+            <Button variant="secondary" onClick={() => setShowMap(!showMap)} className="flex-1 sm:flex-none">
+              <MapIcon size={18}/> {showMap ? 'Hide Map' : 'Show Map'}
+            </Button>
+            <Button variant="secondary" onClick={handleSync} disabled={syncing} className="flex-1 sm:flex-none">
               {syncing ? <Loader2 className="animate-spin" size={18}/> : <RefreshCw size={18}/>}
-              <span className="hidden sm:inline">Sync</span>
+              <span className="hidden sm:inline">Sync Sheets</span>
+              <span className="sm:hidden">Sync</span>
             </Button>
           </div>
         </div>
       </div>
+      
+      {showMap && (
+        <div className="bg-slate-100 border-b border-slate-300 p-2">
+          <div className="max-w-4xl mx-auto">
+             <CampaignMap entries={entries} fields={campaign.fields} />
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-auto bg-slate-50 p-4">
         <div className="max-w-4xl mx-auto space-y-3">
@@ -419,8 +606,8 @@ const CampaignView = ({
             </div>
           ) : (
             entries.map(entry => (
-              <div key={entry.id} className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 flex justify-between items-center">
-                <div className="space-y-1">
+              <div key={entry.id} className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 flex justify-between items-start">
+                <div className="space-y-1 flex-1 cursor-pointer" onClick={() => handleEditEntry(entry)}>
                   <div className="font-mono text-xs text-slate-400">
                     {new Date(entry.createdAt).toLocaleString()}
                   </div>
@@ -434,7 +621,7 @@ const CampaignView = ({
                     </div>
                   )}
                 </div>
-                <div>
+                <div className="flex flex-col items-end gap-2 pl-2">
                   {entry.synced ? (
                     <span className="text-emerald-500 flex items-center gap-1 text-xs font-medium bg-emerald-50 px-2 py-1 rounded-full">
                       <CheckCircle size={12} /> Synced
@@ -444,6 +631,14 @@ const CampaignView = ({
                       <Cloud size={12} /> Local
                     </span>
                   )}
+                   <div className="flex gap-1">
+                      <button className="p-2 text-slate-400 hover:text-blue-500" onClick={() => handleEditEntry(entry)}>
+                        <Edit2 size={16} />
+                      </button>
+                      <button className="p-2 text-slate-400 hover:text-red-500" onClick={(e) => { e.stopPropagation(); handleDeleteEntry(entry.id); }}>
+                        <Trash2 size={16} />
+                      </button>
+                   </div>
                 </div>
               </div>
             ))
@@ -453,7 +648,7 @@ const CampaignView = ({
 
       <div className="absolute bottom-6 right-6">
         <button 
-          onClick={() => setView('entry')}
+          onClick={() => { setFormData({}); setEditingEntryId(null); setView('entry'); }}
           className="bg-accent hover:bg-blue-600 text-white p-4 rounded-full shadow-lg transition-transform hover:scale-105"
         >
           <Plus size={28} />
@@ -469,6 +664,7 @@ const App = () => {
   const [screen, setScreen] = useState<'home' | 'create' | 'campaign'>('home');
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null);
+  const [editingCampaign, setEditingCampaign] = useState<Campaign | undefined>(undefined);
   const [showSettings, setShowSettings] = useState(false);
   const [authConfig, setAuthConfig] = useState<GoogleAuthConfig>(() => {
     const saved = localStorage.getItem('dc_auth_config');
@@ -484,10 +680,25 @@ const App = () => {
     setCampaigns(data.sort((a, b) => b.createdAt - a.createdAt));
   };
 
-  const handleCreateCampaign = async (campaign: Campaign) => {
+  const handleSaveCampaign = async (campaign: Campaign) => {
     await db.saveCampaign(campaign);
     await loadCampaigns();
     setScreen('home');
+    setEditingCampaign(undefined);
+  };
+
+  const handleDeleteCampaign = async (id: string) => {
+    if(confirm("Are you sure? This will delete the campaign and ALL locally collected data. This cannot be undone.")) {
+      await db.deleteCampaign(id);
+      setScreen('home');
+      setSelectedCampaign(null);
+      await loadCampaigns();
+    }
+  };
+
+  const handleEditCampaignRequest = (c: Campaign) => {
+    setEditingCampaign(c);
+    setScreen('create');
   };
 
   const saveAuthConfig = (config: GoogleAuthConfig) => {
@@ -507,12 +718,20 @@ const App = () => {
         campaign={selectedCampaign} 
         onBack={() => setScreen('home')} 
         authConfig={authConfig}
+        onEditCampaign={handleEditCampaignRequest}
+        onDeleteCampaign={handleDeleteCampaign}
       />
     );
   }
 
   if (screen === 'create') {
-    return <CreateCampaign onSave={handleCreateCampaign} onCancel={() => setScreen('home')} />;
+    return (
+      <CreateCampaign 
+        onSave={handleSaveCampaign} 
+        onCancel={() => { setScreen('home'); setEditingCampaign(undefined); }} 
+        existingCampaign={editingCampaign}
+      />
+    );
   }
 
   return (
@@ -546,7 +765,7 @@ const App = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {/* Create New Card */}
           <button 
-            onClick={() => setScreen('create')}
+            onClick={() => { setEditingCampaign(undefined); setScreen('create'); }}
             className="group flex flex-col items-center justify-center h-48 rounded-xl border-2 border-dashed border-slate-300 hover:border-accent hover:bg-blue-50 transition-all cursor-pointer"
           >
             <div className="w-12 h-12 rounded-full bg-blue-100 text-accent flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
@@ -560,7 +779,7 @@ const App = () => {
             <div 
               key={c.id} 
               onClick={() => openCampaign(c)}
-              className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 hover:shadow-md transition-shadow cursor-pointer flex flex-col justify-between h-48"
+              className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 hover:shadow-md transition-shadow cursor-pointer flex flex-col justify-between h-48 relative group"
             >
               <div>
                 <h3 className="font-bold text-lg text-slate-800 mb-1 line-clamp-1">{c.name}</h3>

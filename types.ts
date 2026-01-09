@@ -1,4 +1,4 @@
-export type FieldType = 'text' | 'number' | 'datetime' | 'location' | 'image' | 'boolean';
+export type FieldType = 'text' | 'number' | 'datetime' | 'location' | 'polygon' | 'image' | 'boolean';
 
 export interface FieldDefinition {
   id: string;

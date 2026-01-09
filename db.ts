@@ -41,6 +41,29 @@ export const db = {
     });
   },
 
+  async deleteCampaign(id: string): Promise<void> {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([STORES.CAMPAIGNS, STORES.ENTRIES], 'readwrite');
+      
+      // Delete campaign
+      tx.objectStore(STORES.CAMPAIGNS).delete(id);
+      
+      // Delete associated entries
+      const entryStore = tx.objectStore(STORES.ENTRIES);
+      const index = entryStore.index('campaignId');
+      const req = index.getAllKeys(id);
+      
+      req.onsuccess = () => {
+        const keys = req.result;
+        keys.forEach(key => entryStore.delete(key));
+      };
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  },
+
   async getCampaigns(): Promise<Campaign[]> {
     const db = await openDB();
     return new Promise((resolve, reject) => {
@@ -69,6 +92,17 @@ export const db = {
       const tx = db.transaction(STORES.ENTRIES, 'readwrite');
       const store = tx.objectStore(STORES.ENTRIES);
       const req = store.put(entry);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  },
+
+  async deleteEntry(id: string): Promise<void> {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORES.ENTRIES, 'readwrite');
+      const store = tx.objectStore(STORES.ENTRIES);
+      const req = store.delete(id);
       req.onsuccess = () => resolve();
       req.onerror = () => reject(req.error);
     });
