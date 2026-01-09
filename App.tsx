@@ -2,10 +2,14 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Plus, Settings, Database, Cloud, AlertTriangle, 
   MapPin, Camera, Save, ArrowLeft, RefreshCw,
-  FileSpreadsheet, CheckCircle, Loader2, Trash2, Edit2, Map as MapIcon, X, Maximize2, Minimize2, Crosshair
+  FileSpreadsheet, CheckCircle, Loader2, Trash2, Edit2, 
+  Map as MapIcon, X, Maximize2, Minimize2, Crosshair,
+  Download, ChevronDown, ChevronUp, ExternalLink
 } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
+import JSZip from 'jszip';
+import { saveAs } from 'file-saver';
 
 import { Campaign, FieldDefinition, FieldType, Entry, GoogleAuthConfig } from './types';
 import { db } from './db';
@@ -42,6 +46,71 @@ const Button: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { variant
 const Input: React.FC<React.InputHTMLAttributes<HTMLInputElement>> = (props) => (
   <input className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-accent focus:border-transparent outline-none" {...props} />
 );
+
+const ApiSetupGuide = () => {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="bg-amber-50 border border-amber-200 rounded-lg overflow-hidden transition-all duration-300">
+      <div
+        className="p-4 flex items-start gap-3 cursor-pointer hover:bg-amber-100 transition-colors"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <AlertTriangle className="text-amber-500 shrink-0 mt-0.5" size={20} />
+        <div className="flex-1">
+          <div className="flex justify-between items-center">
+             <span className="font-bold text-amber-900">Google Sheets Sync is disabled</span>
+             {expanded ? <ChevronUp className="text-amber-700" size={20}/> : <ChevronDown className="text-amber-700" size={20}/>}
+          </div>
+          <div className="text-sm text-amber-800 mt-1">
+            Tap here to view step-by-step instructions on how to set up cloud synchronization.
+          </div>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="px-4 pb-4 pt-0 text-sm text-amber-900 space-y-3 bg-amber-50 border-t border-amber-100">
+          <p className="mt-2 font-medium">Follow these steps to enable Google Sheets integration:</p>
+          <ol className="list-decimal pl-5 space-y-2 marker:font-bold marker:text-amber-700">
+            <li>
+              Go to the <a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer" className="text-blue-600 underline font-medium inline-flex items-center gap-1">Google Cloud Console <ExternalLink size={12}/></a>.
+            </li>
+            <li>
+              Create a <strong>New Project</strong> (or select an existing one).
+            </li>
+            <li>
+              In the search bar, type <strong>"Google Sheets API"</strong>, select it, and click <strong>Enable</strong>.
+            </li>
+            <li>
+              Go to <strong>APIs & Services {'>'} Credentials</strong>.
+            </li>
+            <li>
+              Click <strong>Create Credentials</strong> and select <strong>API Key</strong>. Copy this key; this is your <em>Google API Key</em>.
+            </li>
+            <li>
+              Click <strong>Create Credentials</strong> again and select <strong>OAuth client ID</strong>.
+            </li>
+            <li>
+              If prompted, configure the <strong>Consent Screen</strong> (select External, fill in app name and email).
+            </li>
+            <li>
+              For Application type, select <strong>Web application</strong>.
+            </li>
+            <li>
+              Under <strong>Authorized JavaScript origins</strong>, add your app's URL (e.g., <code>https://your-username.github.io</code> or <code>http://localhost:5173</code> for local development).
+            </li>
+            <li>
+              Click Create and copy the <strong>Client ID</strong>.
+            </li>
+            <li>
+              Come back here, click the <strong>Settings</strong> (gear icon) at the top right, and paste your Client ID and API Key.
+            </li>
+          </ol>
+        </div>
+      )}
+    </div>
+  );
+};
 
 // --- specialized Map Components ---
 
@@ -361,6 +430,70 @@ const CampaignView = ({
     } finally {
       setSyncing(false);
     }
+  };
+
+  const handleExport = async () => {
+    if (entries.length === 0) return alert("No data to export.");
+
+    const zip = new JSZip();
+    const folder = zip.folder("images");
+    let hasImages = false;
+
+    // Header row
+    const headers = ['ID', 'Created At', 'Latitude', 'Longitude', 'Accuracy', ...campaign.fields.map(f => f.name)];
+    let csvContent = headers.map(h => `"${h.replace(/"/g, '""')}"`).join(",") + "\n";
+
+    entries.forEach(entry => {
+      const row = [
+        entry.id,
+        new Date(entry.createdAt).toISOString(),
+        entry.data['__loc_lat'] || '',
+        entry.data['__loc_lng'] || '',
+        entry.data['__loc_acc'] || '',
+      ];
+
+      campaign.fields.forEach(field => {
+        let val = entry.data[field.id];
+
+        if (val === undefined || val === null) {
+          row.push("");
+          return;
+        }
+
+        if (field.type === 'image' && val && typeof val === 'string' && val.startsWith('data:image')) {
+           // It's a base64 image
+           hasImages = true;
+           // Extract extension
+           const extMatch = val.match(/^data:image\/(\w+);base64,/);
+           const ext = extMatch ? extMatch[1] : 'jpg';
+           const filename = `${entry.id}_${field.name.replace(/[^a-z0-9]/gi, '_')}.${ext}`;
+           
+           // Remove header "data:image/png;base64,"
+           const base64Data = val.replace(/^data:image\/\w+;base64,/, "");
+           folder?.file(filename, base64Data, {base64: true});
+           
+           row.push(`images/${filename}`);
+        } else if (field.type === 'location') {
+           row.push(val ? `${val.latitude},${val.longitude}` : '');
+        } else if (field.type === 'polygon') {
+           row.push(val ? JSON.stringify(val).replace(/"/g, '""') : '');
+        } else {
+           row.push(String(val).replace(/"/g, '""'));
+        }
+      });
+
+      csvContent += row.map(c => `"${c}"`).join(",") + "\n";
+    });
+
+    zip.file(`${campaign.name.replace(/\s+/g, '_')}_data.csv`, csvContent);
+
+    // If no images were added, remove the folder (JSZip might keep empty folder)
+    if (!hasImages) {
+        zip.remove("images");
+    }
+
+    const content = await zip.generateAsync({ type: "blob" });
+    saveAs(content, `${campaign.name.replace(/\s+/g, '_')}_export.zip`);
   };
 
   const handleSaveEntry = async () => {
@@ -736,6 +869,9 @@ const CampaignView = ({
           </div>
           
           <div className="flex gap-2 mt-2">
+            <Button variant="secondary" onClick={handleExport} className="flex-1 sm:flex-none">
+                <Download size={18} /> <span className="hidden sm:inline">Export</span>
+            </Button>
             <Button variant="secondary" onClick={() => setShowMap(!showMap)} className="flex-1 sm:flex-none">
               <MapIcon size={18}/> {showMap ? 'Hide Map' : 'Show Map'}
             </Button>
@@ -911,14 +1047,9 @@ const App = () => {
       {/* Main Content */}
       <div className="max-w-4xl mx-auto p-4 md:p-6 space-y-6">
         
-        {/* Auth Warning */}
+        {/* Auth Warning & Guide */}
         {(!authConfig.clientId || !authConfig.apiKey) && (
-          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-start gap-3">
-            <AlertTriangle className="text-amber-500 shrink-0" size={20} />
-            <div className="text-sm text-amber-900">
-              <span className="font-bold">Google Sheets Sync is disabled.</span> To enable cloud sync, configure your API keys in Settings.
-            </div>
-          </div>
+          <ApiSetupGuide />
         )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
