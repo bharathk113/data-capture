@@ -271,7 +271,8 @@ const CampaignView = ({
       // Resize image logic could go here to save space
       const reader = new FileReader();
       reader.onloadend = () => {
-        setFormData(prev => ({ ...prev, [fieldId]: reader.result }));
+        // Explicitly cast result to string to satisfy strict TypeScript checks
+        setFormData(prev => ({ ...prev, [fieldId]: reader.result as string }));
       };
       reader.readAsDataURL(file);
     }
