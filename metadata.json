@@ -1,0 +1,9 @@
+{
+  "name": "Data Capture",
+  "description": "Offline-first ground truth data collection tool with Google Sheets synchronization.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
