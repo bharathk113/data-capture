@@ -97,7 +97,7 @@ const ApiSetupGuide = () => {
               For Application type, select <strong>Web application</strong>.
             </li>
             <li>
-              Under <strong>Authorized JavaScript origins</strong>, add your app's URL (e.g., <code>https://your-username.github.io</code> or <code>http://localhost:5173</code> for local development).
+              Under <strong>Authorized JavaScript origins</strong>, add <code>https://bharathk113.github.io</code> app's URL (e.g., <code>https://bharathk113.github.io</code> or <code>http://localhost:5173</code> for local development).
             </li>
             <li>
               Click Create and copy the <strong>Client ID</strong>.
