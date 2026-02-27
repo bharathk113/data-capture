@@ -1,10 +1,13 @@
-const CACHE_NAME = 'data-capture-v1';
+const CACHE_NAME = 'data-capture-v3';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
   './assets/imgs/site.webmanifest',
   './assets/imgs/android-chrome-192x192.png',
   './assets/imgs/android-chrome-512x512.png',
+  './assets/imgs/favicon-32x32.png',
+  './assets/imgs/favicon-16x16.png',
+  './assets/imgs/favicon.ico',
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
   'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
   'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
