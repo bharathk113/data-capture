@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Data Capture</title>
+    <link rel="manifest" href="/assets/imgs/site.webmanifest">
+    <meta name="theme-color" content="#3b82f6">
+    <link rel="apple-touch-icon" href="/assets/imgs/apple-touch-icon.png">
     <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script src="https://apis.google.com/js/api.js" async defer></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -19,7 +22,9 @@
     "vite": "https://esm.sh/vite@^7.3.1",
     "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
     "leaflet": "https://esm.sh/leaflet@^1.9.4",
-    "react-leaflet": "https://esm.sh/react-leaflet@^5.0.0"
+    "react-leaflet": "https://esm.sh/react-leaflet@^5.0.0",
+    "jszip": "https://esm.sh/jszip@^3.10.1",
+    "file-saver": "https://esm.sh/file-saver@^2.0.5"
   }
 }
 </script>
@@ -27,5 +32,14 @@
   <body class="bg-gray-50 text-slate-900">
     <div id="root"></div>
     <script type="module" src="/index.tsx"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js')
+            .then(reg => console.log('SW registered', reg))
+            .catch(err => console.error('SW registration failed', err));
+        });
+      }
+    </script>
   </body>
 </html>
