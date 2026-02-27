@@ -26,6 +26,38 @@ L.Icon.Default.mergeOptions({
 
 // --- Helper Components ---
 
+const OfflineIndicator = () => (
+  <div className="bg-slate-800 text-white px-4 py-2 flex items-center justify-center gap-2 text-xs md:text-sm sticky top-0 z-[60]">
+    <AlertTriangle size={14} className="text-amber-400" />
+    <span>Offline Mode: Data is being saved locally and will sync when online.</span>
+  </div>
+);
+
+const InstallNudge = ({ onInstall, onDismiss }: { onInstall: () => void, onDismiss: () => void }) => (
+  <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-6 md:w-80 bg-blue-600 text-white p-4 rounded-xl shadow-2xl z-[100] border border-blue-500/30">
+    <div className="flex items-start gap-3">
+      <div className="bg-white/20 p-2 rounded-lg shrink-0">
+        <Download size={24} />
+      </div>
+      <div className="flex-1">
+        <h3 className="font-bold text-sm">Install Data Capture</h3>
+        <p className="text-xs text-blue-100 mt-1">Access your data collection tools offline and from your home screen.</p>
+        <div className="flex gap-3 mt-3">
+          <button onClick={onInstall} className="bg-white text-blue-600 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-50 transition-colors">
+            Install Now
+          </button>
+          <button onClick={onDismiss} className="text-blue-100 text-xs font-medium hover:text-white transition-colors">
+            Maybe Later
+          </button>
+        </div>
+      </div>
+      <button onClick={onDismiss} className="text-blue-200 hover:text-white">
+        <X size={18} />
+      </button>
+    </div>
+  </div>
+);
+
 const Button: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'ghost' | 'danger' }> = ({ 
   className = '', variant = 'primary', ...props 
 }) => {
@@ -97,7 +129,10 @@ const ApiSetupGuide = () => {
               For Application type, select <strong>Web application</strong>.
             </li>
             <li>
-              Under <strong>Authorized JavaScript origins</strong>, add <code>https://bharathk113.github.io</code> app's URL (e.g., <code>https://bharathk113.github.io</code> or <code>http://localhost:5173</code> for local development).
+              Under <strong>Authorized JavaScript origins</strong>, you MUST add exactly this URL:
+              <code className="block mt-1 p-1 bg-white border border-amber-200 rounded text-amber-800 select-all cursor-text font-mono">
+                {window.location.origin}
+              </code>
             </li>
             <li>
               Click Create and copy the <strong>Client ID</strong>.
@@ -106,6 +141,19 @@ const ApiSetupGuide = () => {
               Come back here, click the <strong>Settings</strong> (gear icon) at the top right, and paste your Client ID and API Key.
             </li>
           </ol>
+
+          <div className="bg-amber-100 p-3 rounded text-amber-900 mt-4 border border-amber-200">
+            <p className="font-bold text-xs uppercase mb-1">Troubleshooting "Error 403: access_denied"</p>
+            <p className="text-xs mb-1">
+              This error means Google doesn't recognize this website as authorized. Check these common issues:
+            </p>
+            <ul className="list-disc pl-4 text-xs space-y-1">
+              <li>Did you add <strong>{window.location.origin}</strong> to Authorized JavaScript origins?</li>
+              <li>Did you include a trailing slash? (e.g. <code>.io/</code>) -{'>'} <strong>Remove it.</strong></li>
+              <li>Did you include the path? (e.g. <code>/data-capture</code>) -{'>'} <strong>Remove it.</strong> Only the domain is needed.</li>
+              <li>Did you just save the changes? -{'>'} <strong>Wait 5 minutes</strong> for Google to propagate changes.</li>
+            </ul>
+          </div>
         </div>
       )}
     </div>
@@ -966,9 +1014,48 @@ const App = () => {
     return saved ? JSON.parse(saved) : { clientId: '', apiKey: '' };
   });
 
+  // PWA & Offline State
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [showInstallNudge, setShowInstallNudge] = useState(false);
+
   useEffect(() => {
     loadCampaigns();
+
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setShowInstallNudge(true);
+    };
+
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // Check if already installed
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+      setShowInstallNudge(false);
+    }
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
   }, []);
+
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setDeferredPrompt(null);
+      setShowInstallNudge(false);
+    }
+  };
 
   const loadCampaigns = async () => {
     const data = await db.getCampaigns();
@@ -1009,28 +1096,47 @@ const App = () => {
 
   if (screen === 'campaign' && selectedCampaign) {
     return (
-      <CampaignView 
-        campaign={selectedCampaign} 
-        onBack={() => setScreen('home')} 
-        authConfig={authConfig}
-        onEditCampaign={handleEditCampaignRequest}
-        onDeleteCampaign={handleDeleteCampaign}
-      />
+      <>
+        {!isOnline && <OfflineIndicator />}
+        <CampaignView 
+          campaign={selectedCampaign} 
+          onBack={() => setScreen('home')} 
+          authConfig={authConfig}
+          onEditCampaign={handleEditCampaignRequest}
+          onDeleteCampaign={handleDeleteCampaign}
+        />
+        {showInstallNudge && (
+          <InstallNudge 
+            onInstall={handleInstallClick} 
+            onDismiss={() => setShowInstallNudge(false)} 
+          />
+        )}
+      </>
     );
   }
 
   if (screen === 'create') {
     return (
-      <CreateCampaign 
-        onSave={handleSaveCampaign} 
-        onCancel={() => { setScreen('home'); setEditingCampaign(undefined); }} 
-        existingCampaign={editingCampaign}
-      />
+      <>
+        {!isOnline && <OfflineIndicator />}
+        <CreateCampaign 
+          onSave={handleSaveCampaign} 
+          onCancel={() => { setScreen('home'); setEditingCampaign(undefined); }} 
+          existingCampaign={editingCampaign}
+        />
+        {showInstallNudge && (
+          <InstallNudge 
+            onInstall={handleInstallClick} 
+            onDismiss={() => setShowInstallNudge(false)} 
+          />
+        )}
+      </>
     );
   }
 
   return (
     <div className="min-h-screen bg-slate-50">
+      {!isOnline && <OfflineIndicator />}
       {/* Header */}
       <div className="bg-white border-b border-slate-200 sticky top-0 z-10">
         <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
@@ -1103,6 +1209,13 @@ const App = () => {
           config={authConfig} 
           onSave={saveAuthConfig} 
           onClose={() => setShowSettings(false)} 
+        />
+      )}
+
+      {showInstallNudge && (
+        <InstallNudge 
+          onInstall={handleInstallClick} 
+          onDismiss={() => setShowInstallNudge(false)} 
         />
       )}
     </div>
