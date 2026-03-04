@@ -126,6 +126,18 @@ const ApiSetupGuide = () => {
               If prompted, configure the <strong>Consent Screen</strong> (select External, fill in app name and email).
             </li>
             <li>
+              After configuring the Consent Screen, open <strong>Google Auth Platform</strong> from the left sidebar.
+            </li>
+            <li>
+              Click on <strong>Audience</strong>.
+            </li>
+            <li>
+              Under <strong>Test Users</strong>, click <strong>Add Users</strong> and enter the Google email address(es) that you want to use to log in and sync this app.
+            </li>
+            <li>
+              Click <strong>Save</strong> and wait about <strong>10 minutes</strong> for the changes to propagate before trying to log in.
+            </li>
+            <li>
               For Application type, select <strong>Web application</strong>.
             </li>
             <li>
